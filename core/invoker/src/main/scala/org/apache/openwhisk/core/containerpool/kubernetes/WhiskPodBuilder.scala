@@ -79,7 +79,7 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       .addToAnnotations("io.containerd.cri.runtime-handler", "kata")
       .endMetadata()
 
-    val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always")
+    val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always").withRuntimeClassName("kata")
 
     if (config.userPodNodeAffinity.enabled) {
       val affinity = specBuilder
@@ -138,7 +138,6 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
 
     val pod = containerBuilder
       .endContainer()
-      .withRuntimeClassName("kata")
       .endSpec()
       .build()
     val pdb = if (config.pdbEnabled) {
