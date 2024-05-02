@@ -153,9 +153,9 @@ class KubernetesClient(
           labels: Map[String, String] = Map.empty)(implicit transid: TransactionId): Future[KubernetesContainer] = {
 
     val (pod, pdb) = podBuilder.buildPodSpec(name, image, memory, environment, labels, config)
-    if (transid.meta.extraLogging) {
+    //if (transid.meta.extraLogging) {
       log.info(this, s"Pod spec being created\n${Serialization.asYaml(pod)}")
-    }
+    //}
     val namespace = kubeRestClient.getNamespace
     val start = transid.started(
       this,
