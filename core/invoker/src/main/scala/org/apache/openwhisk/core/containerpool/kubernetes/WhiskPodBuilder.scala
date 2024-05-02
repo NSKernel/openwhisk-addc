@@ -76,6 +76,7 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       .addToLabels("name", name)
       .addToLabels("user-action-pod", "true")
       .addToLabels(labels.asJava)
+      .addToAnnotations("io.containerd.cri.runtime-handler", "kata")
       .endMetadata()
 
     val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always")
@@ -137,6 +138,7 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
 
     val pod = containerBuilder
       .endContainer()
+      .withRuntimeClassName("kata")
       .endSpec()
       .build()
     val pdb = if (config.pdbEnabled) {
