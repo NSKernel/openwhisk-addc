@@ -117,8 +117,7 @@ sealed abstract class ContainerStarted(val container: Container,
 sealed abstract trait ContainerInUse {
   val activeActivationCount: Int
   val action: ExecutableWhiskAction
-  def hasCapacity() =
-    activeActivationCount < action.limits.concurrency.maxConcurrent
+  def hasCapacity() = true
 }
 
 /** trait representing a container that is NOT in use and is usable by subsequent activation(s) */
@@ -270,6 +269,8 @@ class ContainerProxy(factory: (TransactionId,
   var runBuffer = immutable.Queue.empty[Run] //does not retain order, but does manage jobs that would have pushed past action concurrency limit
   //track buffer processing state to avoid extra transitions near end of buffer - this provides a pseudo-state between Running and Ready
   var bufferProcessing = false
+  val containerMaxConcurrent = 4
+  var warmedMap = scala.collection.mutable.Map[org.apache.openwhisk.core.entity.EntityName, Integer]()
 
   //keep a separate count to avoid confusion with ContainerState.activeActivationCount that is tracked/modified only in ContainerPool
   var activeCount = 0;
@@ -300,9 +301,10 @@ class ContainerProxy(factory: (TransactionId,
       implicit val transid = job.msg.transid
       activeCount += 1
       // create a new container
+      // For each namespace (user)
       val container = factory(
         job.msg.transid,
-        ContainerProxy.containerName(instance, job.msg.user.namespace.name.asString, job.action.name.asString),
+        ContainerProxy.containerName(instance, job.msg.user.namespace.name.asString, job.action.exec.kind),
         job.action.exec.image,
         job.action.exec.pull,
         job.action.limits.memory.megabytes.MB,
@@ -425,13 +427,13 @@ class ContainerProxy(factory: (TransactionId,
         goto(Ready) using newData
       }
     case Event(job: Run, data: WarmedData)
-        if activeCount >= data.action.limits.concurrency.maxConcurrent && !rescheduleJob => //if we are over concurrency limit, and not a failure on resume
+        if activeCount >= containerMaxConcurrent && !rescheduleJob => //if we are over concurrency limit, and not a failure on resume
       implicit val transid = job.msg.transid
       logging.warn(this, s"buffering for maxed warm container ${data.container}; ${activeCount} activations in flight")
       runBuffer = runBuffer.enqueue(job)
       stay()
     case Event(job: Run, data: WarmedData)
-        if activeCount < data.action.limits.concurrency.maxConcurrent && !rescheduleJob => //if there was a delay, and not a failure on resume, skip the run
+        if activeCount < containerMaxConcurrent && !rescheduleJob => //if there was a delay, and not a failure on resume, skip the run
       activeCount += 1
       implicit val transid = job.msg.transid
       bufferProcessing = false //reset buffer processing state
@@ -502,7 +504,7 @@ class ContainerProxy(factory: (TransactionId,
     case _ => delay
   }
 
-  when(Ready, stateTimeout = pauseGrace) {
+  when(Ready/*, stateTimeout = pauseGrace*/) { // Don't pause
     case Event(job: Run, data: WarmedData) =>
       implicit val transid = job.msg.transid
       activeCount += 1
@@ -514,9 +516,9 @@ class ContainerProxy(factory: (TransactionId,
       goto(Running) using newData
 
     // pause grace timed out
-    case Event(StateTimeout, data: WarmedData) =>
+    /*case Event(StateTimeout, data: WarmedData) =>
       data.container.suspend()(TransactionId.invokerNanny).map(_ => ContainerPaused).pipeTo(self)
-      goto(Pausing)
+      goto(Pausing)*/
 
     case Event(Remove, data: WarmedData) => destroyContainer(data, true)
 
@@ -531,7 +533,7 @@ class ContainerProxy(factory: (TransactionId,
     case _                                          => delay
   }
 
-  when(Paused, stateTimeout = unusedTimeout) {
+  when(Paused/*, stateTimeout = unusedTimeout*/) { // No longer time out. We keep the container for the user
     case Event(job: Run, data: WarmedData) =>
       implicit val transid = job.msg.transid
       activeCount += 1
@@ -552,9 +554,9 @@ class ContainerProxy(factory: (TransactionId,
       goto(Running) using newData
 
     // container is reclaimed by the pool or it has become too old
-    case Event(StateTimeout | Remove, data: WarmedData) =>
+    /*case Event(StateTimeout | Remove, data: WarmedData) =>
       rescheduleJob = true // to suppress sending message to the pool and not double count
-      destroyContainer(data, true)
+      destroyContainer(data, true)*/
   }
 
   when(Removing) {
@@ -613,10 +615,10 @@ class ContainerProxy(factory: (TransactionId,
   /** Either process runbuffer or signal parent to send work; return true if runbuffer is being processed */
   def requestWork(newData: WarmedData): Boolean = {
     //if there is concurrency capacity, process runbuffer, signal NeedWork, or both
-    if (activeCount < newData.action.limits.concurrency.maxConcurrent) {
+    if (activeCount < containerMaxConcurrent) {
       if (runBuffer.nonEmpty) {
         //only request work once, if available larger than runbuffer
-        val available = newData.action.limits.concurrency.maxConcurrent - activeCount
+        val available = containerMaxConcurrent - activeCount
         val needWork: Boolean = available > runBuffer.size
         processBuffer(newData.action, newData)
         if (needWork) {
@@ -636,7 +638,7 @@ class ContainerProxy(factory: (TransactionId,
   /** Process buffered items up to the capacity of action concurrency config */
   def processBuffer(action: ExecutableWhiskAction, newData: ContainerData) = {
     //send as many buffered as possible
-    val available = action.limits.concurrency.maxConcurrent - activeCount
+    val available = containerMaxConcurrent - activeCount
     logging.info(this, s"resending up to ${available} from ${runBuffer.length} buffered jobs")
     1 to available foreach { _ =>
       runBuffer.dequeueOption match {
@@ -794,28 +796,30 @@ class ContainerProxy(factory: (TransactionId,
     }
 
     // Only initialize iff we haven't yet warmed the container
-    val initialize = stateData match {
-      case data: WarmedData =>
-        Future.successful(None)
-      case _ =>
-        val owEnv = (authEnvironment ++ environment ++ Map(
-          "deadline" -> (Instant.now.toEpochMilli + actionTimeout.toMillis).toString.toJson)) map {
-          case (key, value) => "__OW_" + key.toUpperCase -> value
-        }
+    val initialize = if (warmedMap.contains(job.action.name)) {
+      Future.successful(None)
+    }
+    else {
+      val owEnv = (authEnvironment ++ environment ++ Map(
+        "deadline" -> (Instant.now.toEpochMilli + actionTimeout.toMillis).toString.toJson)) map {
+        case (key, value) => "__OW_" + key.toUpperCase -> value
+      }
 
-        container
-          .initialize(
-            job.action.containerInitializer(env ++ owEnv),
-            actionTimeout,
-            job.action.limits.concurrency.maxConcurrent,
-            Some(job.action.toWhiskAction))
-          .map(Some(_))
+      container
+        .initialize(
+          job.action.containerInitializer(env ++ owEnv),
+          actionTimeout,
+          containerMaxConcurrent,
+          Some(job.action.toWhiskAction))
+        .map(Some(_))
     }
 
     val activation: Future[WhiskActivation] = initialize
       .flatMap { initInterval =>
         //immediately setup warmedData for use (before first execution) so that concurrent actions can use it asap
         if (initInterval.isDefined) {
+          // Record it to the warmed map
+          warmedMap += (job.action.name -> 1) 
           self ! InitCompleted(WarmedData(container, job.msg.user.namespace.name, job.action, Instant.now, 1))
         }
 
@@ -829,7 +833,7 @@ class ContainerProxy(factory: (TransactionId,
             parameters,
             env.toJson.asJsObject,
             actionTimeout,
-            job.action.limits.concurrency.maxConcurrent,
+            containerMaxConcurrent,
             reschedule)(job.msg.transid)
           .map {
             case (runInterval, response) =>

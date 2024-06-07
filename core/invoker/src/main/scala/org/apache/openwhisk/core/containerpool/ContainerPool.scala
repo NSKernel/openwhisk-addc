@@ -137,7 +137,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
         val createdContainer =
           // Schedule a job to a warm container
           ContainerPool
-            .schedule(r.action, r.msg.user.namespace.name, freePool)
+            .schedule(r.action, r.msg.user.namespace.name, freePool) // Technically this time a container under the same namespace will return
             .map(container => (container, container._2.initingState)) //warmed, warming, and warmingCold always know their state
             .orElse(
               // There was no warm/warming/warmingCold container. Try to take a prewarm container or a cold container.
@@ -180,7 +180,7 @@ class ContainerPool(childFactory: ActorRefFactory => ActorRef,
               logging.error(this, s"invalid activation count < 1 ${newData}")
             }
 
-            //only move to busyPool if max reached
+            //only move to busyPool if max reached // We now allow as many works
             if (!newData.hasCapacity()) {
               if (r.action.limits.concurrency.maxConcurrent > 1) {
                 logging.info(
@@ -511,18 +511,18 @@ object ContainerPool {
                                            idles: Map[A, ContainerData]): Option[(A, ContainerData)] = {
     idles
       .find {
-        case (_, c @ WarmedData(_, `invocationNamespace`, `action`, _, _, _)) if c.hasCapacity() => true
+        case (_, c @ WarmedData(_, `invocationNamespace`, _, _, _, _)) if c.hasCapacity() => true
         case _                                                                                   => false
       }
       .orElse {
         idles.find {
-          case (_, c @ WarmingData(_, `invocationNamespace`, `action`, _, _)) if c.hasCapacity() => true
+          case (_, c @ WarmingData(_, `invocationNamespace`, _, _, _)) if c.hasCapacity() => true
           case _                                                                                 => false
         }
       }
       .orElse {
         idles.find {
-          case (_, c @ WarmingColdData(`invocationNamespace`, `action`, _, _)) if c.hasCapacity() => true
+          case (_, c @ WarmingColdData(`invocationNamespace`, _, _, _)) if c.hasCapacity() => true
           case _                                                                                  => false
         }
       }
