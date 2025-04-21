@@ -77,12 +77,12 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       .addToLabels("user-action-pod", "true")
       .addToLabels(labels.asJava)
       //.addToAnnotations("io.containerd.cri.runtime-handler", "kata")
-      .addToAnnotations("io.containerd.cri.runtime-handler", "kata-qemu-sev")
-      .addToAnnotations("io.katacontainers.config.pre_attestation.enabled", "false")
-      .addToAnnotations("io.katacontainers.config.sev.policy", "3")
+      .addToAnnotations("io.containerd.cri.runtime-handler", "kata-qemu-snp")
+      //.addToAnnotations("io.katacontainers.config.pre_attestation.enabled", "false")
+      //.addToAnnotations("io.katacontainers.config.sev.policy", "3")
       .endMetadata()
 
-    val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always").withRuntimeClassName("kata-qemu-sev")
+    val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always").withRuntimeClassName("kata-qemu-snp")
 
     if (config.userPodNodeAffinity.enabled) {
       val affinity = specBuilder
