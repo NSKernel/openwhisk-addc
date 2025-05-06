@@ -30,7 +30,10 @@ import io.fabric8.kubernetes.api.model.{
   LabelSelectorBuilder,
   Pod,
   PodBuilder,
-  Quantity
+  Quantity,
+//  VolumeDevice,
+//  PersistentVolumeClaimVolumeSource,
+//  Volume
 }
 import io.fabric8.kubernetes.client.NamespacedKubernetesClient
 import org.apache.openwhisk.common.TransactionId
@@ -82,7 +85,14 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       //.addToAnnotations("io.katacontainers.config.sev.policy", "3")
       .endMetadata()
 
+    //val pcv = new PersistentVolumeClaimVolumeSource()
+    //pcv.setClaimName("trusted-pvc")
+    //val vol = new Volume()
+    //vol.setName("trusted-storage")
+    //vol.setPersistentVolumeClaim(pcv) 
+
     val specBuilder = pb1.editOrNewSpec().withRestartPolicy("Always").withRuntimeClassName("kata-qemu-snp")
+    //  .withVolumes(vol)
 
     if (config.userPodNodeAffinity.enabled) {
       val affinity = specBuilder
@@ -115,6 +125,10 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       .map(diskConfig => Map("ephemeral-storage" -> new Quantity(diskConfig.limit.toMB + "Mi")))
       .getOrElse(Map.empty)
 
+    //val vmount = new VolumeDevice()
+    //vmount.setDevicePath("/dev/trusted_store")
+    //vmount.setName("trusted-storage")
+
     //In container its assumed that env, port, resource limits are set explicitly
     //Here if any value exist in template then that would be overridden
     containerBuilder
@@ -125,6 +139,7 @@ class WhiskPodBuilder(client: NamespacedKubernetesClient, config: KubernetesClie
       .endResources()
       .withName(actionContainerName)
       .withImage(image)
+      //.withVolumeDevices(vmount)
       .withEnv(envVars.asJava)
       .addNewPort()
       .withContainerPort(8080)
